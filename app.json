@@ -34,13 +34,19 @@
           "resizeMode": "contain",
           "backgroundColor": "#000"
         }
-      ]
+      ],
+      "expo-font",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true
     },
     "extra": {
-      "EXPO_PUBLIC_BACKEND_URL": "https://ovulation-app.preview.emergentagent.com"
+      "EXPO_PUBLIC_BACKEND_URL": "https://ovulation-app.preview.emergentagent.com",
+      "router": {},
+      "eas": {
+        "projectId": "e6e8ea1d-b796-49ba-beb3-a22b438a3e57"
+      }
     }
   }
 }

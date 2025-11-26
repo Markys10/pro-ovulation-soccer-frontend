@@ -5,12 +5,10 @@ import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system';
 
 const STORAGE_KEY = '@pro_ovulation_soccer:profiles';
-const ORDER_STORAGE_KEY = '@pro_ovulation_soccer:profile_order';
 
 interface ProfileStore {
   profiles: Profile[];
   isLoading: boolean;
-  profileOrder: string[]; // Array de IDs para mantener el orden personalizado
   
   // Acciones
   loadProfiles: () => Promise<void>;
@@ -19,7 +17,7 @@ interface ProfileStore {
   deleteProfile: (id: string) => Promise<void>;
   addObservation: (profileId: string, observation: Observation) => Promise<void>;
   deleteObservation: (profileId: string, fecha: string) => Promise<void>;
-  updateProfileOrder: (newOrder: string[]) => Promise<void>;
+  reorderProfiles: (profiles: Profile[]) => Promise<void>;
   exportData: () => Promise<void>;
   importData: (data: string) => Promise<void>;
   clearAll: () => Promise<void>;
@@ -28,18 +26,14 @@ interface ProfileStore {
 export const useProfileStore = create<ProfileStore>((set, get) => ({
   profiles: [],
   isLoading: false,
-  profileOrder: [],
 
   loadProfiles: async () => {
     try {
       set({ isLoading: true });
       const data = await AsyncStorage.getItem(STORAGE_KEY);
-      const orderData = await AsyncStorage.getItem(ORDER_STORAGE_KEY);
-      
       if (data) {
         const profiles = JSON.parse(data);
-        const profileOrder = orderData ? JSON.parse(orderData) : [];
-        set({ profiles, profileOrder, isLoading: false });
+        set({ profiles, isLoading: false });
       } else {
         set({ isLoading: false });
       }
@@ -50,14 +44,20 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
   },
 
   addProfile: async (profileData) => {
+    const existingProfiles = get().profiles;
+    const maxOrder = existingProfiles.length > 0 
+      ? Math.max(...existingProfiles.map(p => p.order || 0))
+      : -1;
+    
     const newProfile: Profile = {
       ...profileData,
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       observaciones: profileData.observaciones || [],
       createdAt: new Date().toISOString(),
+      order: maxOrder + 1,
     };
 
-    const profiles = [...get().profiles, newProfile];
+    const profiles = [...existingProfiles, newProfile];
     set({ profiles });
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
   },
@@ -71,9 +71,15 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
   },
 
   deleteProfile: async (id) => {
-    const profiles = get().profiles.filter((p) => p.id !== id);
-    set({ profiles });
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
+    try {
+      const profiles = get().profiles.filter((p) => p.id !== id);
+      set({ profiles });
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
+      return true;
+    } catch (error) {
+      console.error('Error deleting profile:', error);
+      throw error;
+    }
   },
 
   addObservation: async (profileId, observation) => {
@@ -97,22 +103,32 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
   },
 
   deleteObservation: async (profileId, fecha) => {
-    const profiles = get().profiles.map((p) => {
-      if (p.id === profileId) {
-        return {
-          ...p,
-          observaciones: p.observaciones.filter(o => o.fecha !== fecha),
-        };
-      }
-      return p;
-    });
-    set({ profiles });
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
+    try {
+      const profiles = get().profiles.map((p) => {
+        if (p.id === profileId) {
+          return {
+            ...p,
+            observaciones: p.observaciones.filter(o => o.fecha !== fecha),
+          };
+        }
+        return p;
+      });
+      set({ profiles });
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
+      return true;
+    } catch (error) {
+      console.error('Error deleting observation:', error);
+      throw error;
+    }
   },
 
-  updateProfileOrder: async (newOrder: string[]) => {
-    set({ profileOrder: newOrder });
-    await AsyncStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(newOrder));
+  reorderProfiles: async (reorderedProfiles) => {
+    const profilesWithOrder = reorderedProfiles.map((p, index) => ({
+      ...p,
+      order: index,
+    }));
+    set({ profiles: profilesWithOrder });
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(profilesWithOrder));
   },
 
   exportData: async () => {

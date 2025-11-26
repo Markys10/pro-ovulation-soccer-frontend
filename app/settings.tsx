@@ -7,6 +7,7 @@ import {
   Alert,
   ScrollView,
   TextInput,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -86,7 +87,11 @@ export default function Settings() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={COLORS.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.title}>Configuración</Text>
+        <Image 
+          source={require('../assets/images/configuracion.png')} 
+          style={styles.titleImage}
+          resizeMode="contain"
+        />
         <View style={{ width: 24 }} />
       </View>
 
@@ -223,10 +228,9 @@ const styles = StyleSheet.create({
   backButton: {
     padding: 4,
   },
-  title: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: COLORS.textPrimary,
+  titleImage: {
+    width: 180,
+    height: 30,
   },
   scrollView: {
     flex: 1,

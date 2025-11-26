@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -7,176 +7,91 @@ import {
   TouchableOpacity,
   Image,
   Dimensions,
-  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useProfileStore } from '../store/useProfileStore';
-import { predictForDate, PredictionResult } from '../utils/api';
-import { COLORS } from '../constants/theme';
+import { scoreForTarget } from '../utils/cycle_engine';
+import { COLORS, getCategoryColor, getCategoryName } from '../constants/theme';
 import { formatDateES } from '../utils/dateFormat';
-import DraggableFlatList, { RenderItemParams } from 'react-native-draggable-flatlist';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 
 const { width } = Dimensions.get('window');
 
-interface ProfileWithPrediction {
-  id: string;
-  nombre: string;
-  edad?: number;
-  foto?: string;
-  observaciones: any[];
-  createdAt: string;
-  prediction: PredictionResult | null;
-  iconSource: any;
-  isLoading: boolean;
-}
-
-// Mapeo de iconos
-const ICON_SOURCES = {
-  regla: require('../assets/images/regla.png'),
-  perrisima: require('../assets/images/perrisima.png'),
-  horny: require('../assets/images/horny.png'),
-  nifunifa: require('../assets/images/nifunifa.png'),
-};
-
-// Función para determinar qué icono mostrar según la lógica del manual
-function getIconForPrediction(prediction: PredictionResult | null): keyof typeof ICON_SOURCES {
-  if (!prediction) return 'nifunifa';
-  
-  const { cats } = prediction;
-  const sexual_prob = cats.sexual_prob || 0;
-  const regla = cats.regla || 0;
-  const nifunifa = cats.nifunifa || 0;
-  const perrisima = cats.perrisima || 0;
-  const horny = cats.horny || 0;
-  
-  // Si sexual_prob > max(regla, nifunifa)
-  if (sexual_prob > Math.max(regla, nifunifa)) {
-    // Si perrisima >= horny -> perrisima, else -> horny
-    return perrisima >= horny ? 'perrisima' : 'horny';
-  }
-  
-  // Si regla >= nifunifa -> regla, else -> nifunifa
-  return regla >= nifunifa ? 'regla' : 'nifunifa';
-}
-
 export default function Index() {
   const router = useRouter();
-  const profiles = useProfileStore(state => state.profiles);
-  const updateProfileOrder = useProfileStore(state => state.updateProfileOrder);
+  const { profiles, reorderProfiles } = useProfileStore();
   const today = new Date();
-  const [profilesWithPredictions, setProfilesWithPredictions] = useState<ProfileWithPrediction[]>([]);
-  const [isLoadingPredictions, setIsLoadingPredictions] = useState(true);
+  const [isReordering, setIsReordering] = useState(false);
 
-  // Cargar predicciones para todos los perfiles
-  useEffect(() => {
-    const loadPredictions = async () => {
-      setIsLoadingPredictions(true);
-      
-      // Ordenar alfabéticamente por nombre
-      const sortedProfiles = [...profiles].sort((a, b) => 
-        a.nombre.localeCompare(b.nombre, 'es')
-      );
-
-      const profilesWithPreds: ProfileWithPrediction[] = await Promise.all(
-        sortedProfiles.map(async (profile) => {
-          let prediction: PredictionResult | null = null;
-          
-          if (profile.observaciones.length > 0) {
-            const obs_dates = profile.observaciones.map(o => o.fecha);
-            const certain_dates = profile.observaciones
-              .filter(o => o.certain !== false)
-              .map(o => o.fecha);
-            
-            prediction = await predictForDate(
-              obs_dates,
-              today.toISOString().split('T')[0],
-              certain_dates
-            );
-          }
-          
-          const iconSource = ICON_SOURCES[getIconForPrediction(prediction)];
-          
-          return {
-            ...profile,
-            prediction,
-            iconSource,
-            isLoading: false,
-          };
-        })
-      );
-
-      setProfilesWithPredictions(profilesWithPreds);
-      setIsLoadingPredictions(false);
-    };
-
-    loadPredictions();
+  // Ordenar alfabéticamente o por orden personalizado
+  const sortedProfiles = useMemo(() => {
+    const sorted = [...profiles].sort((a, b) => {
+      // Si tienen orden personalizado, usar ese
+      if (a.order !== undefined && b.order !== undefined) {
+        return a.order - b.order;
+      }
+      // Si no, orden alfabético
+      return a.nombre.localeCompare(b.nombre, 'es');
+    });
+    return sorted;
   }, [profiles]);
 
-  const renderProfileItem = ({ item, drag, isActive }: RenderItemParams<ProfileWithPrediction>) => {
-    const prediction = item.prediction;
-    const reliability_color = prediction?.reliability_color || 'red';
-    const reliability_pct = prediction?.reliability_pct || 0;
-    const sexual_prob = prediction?.cats.sexual_prob || 0;
-    
-    // Color del borde según reliability
-    const reliabilityBorderColor = 
-      reliability_color === 'green' ? '#4CAF50' :
-      reliability_color === 'yellow' ? '#FFC107' : '#F44336';
+  const profilesWithPredictions = useMemo(() => {
+    return sortedProfiles.map(profile => {
+      const obsDates = profile.observaciones.map(o => o.fecha);
+      const prediction = scoreForTarget(obsDates, today);
+      
+      if (!prediction) {
+        return {
+          ...profile,
+          prediction: { regla: 0.25, perrisima: 0.25, horny: 0.25, nifunifa: 0.25 },
+          mainCategory: 'nifunifa' as const,
+          confidence: 0.25,
+        };
+      }
+      
+      // Prioridad: Perrísima > Horny > Ni fu ni fa > Regla
+      const maxProb = Math.max(
+        prediction.perrisima,
+        prediction.horny,
+        prediction.nifunifa,
+        prediction.regla
+      );
+      
+      let mainCategory: 'regla' | 'perrisima' | 'horny' | 'nifunifa';
+      if (prediction.perrisima === maxProb) {
+        mainCategory = 'perrisima';
+      } else if (prediction.horny === maxProb) {
+        mainCategory = 'horny';
+      } else if (prediction.nifunifa === maxProb) {
+        mainCategory = 'nifunifa';
+      } else {
+        mainCategory = 'regla';
+      }
+      
+      const confidence = maxProb;
 
-    return (
-      <TouchableOpacity
-        style={[
-          styles.profileCard,
-          { borderColor: reliabilityBorderColor, borderWidth: 2 },
-          isActive && styles.profileCardActive
-        ]}
-        onPress={() => router.push(`/profile/${item.id}`)}
-        onLongPress={drag}
-        delayLongPress={1000}
-      >
-        <View style={styles.compactProfileRow}>
-          {item.foto ? (
-            <Image source={{ uri: item.foto }} style={styles.profileImage} />
-          ) : (
-            <View style={[styles.profileImage, styles.profileImagePlaceholder]}>
-              <Ionicons name="person" size={32} color={COLORS.textSecondary} />
-            </View>
-          )}
-          
-          <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>{item.nombre}</Text>
-            {item.edad && (
-              <Text style={styles.profileAge}>{item.edad} años</Text>
-            )}
-            <View style={styles.observationsBadge}>
-              <Ionicons name="water" size={12} color={COLORS.textSecondary} />
-              <Text style={styles.observationsText}>
-                {item.observaciones.length} registros
-              </Text>
-            </View>
-          </View>
+      return {
+        ...profile,
+        prediction,
+        mainCategory,
+        confidence,
+      };
+    });
+  }, [sortedProfiles]);
 
-          <View style={styles.statusContainer}>
-            <Image source={item.iconSource} style={styles.statusIcon} />
-            <Text style={[styles.statusPercentage, { color: reliabilityBorderColor }]}>
-              {Math.round(sexual_prob * 100)}%
-            </Text>
-            <Text style={styles.reliabilityText}>
-              Conf: {Math.round(reliability_pct)}%
-            </Text>
-          </View>
-          
-          <Ionicons 
-            name="chevron-forward" 
-            size={24} 
-            color={COLORS.textSecondary} 
-          />
-        </View>
-      </TouchableOpacity>
+  const handleSortAlphabetically = async () => {
+    const alphabeticallySorted = [...profiles].sort((a, b) => 
+      a.nombre.localeCompare(b.nombre, 'es')
     );
+    await reorderProfiles(alphabeticallySorted);
   };
 
   return (
@@ -184,16 +99,20 @@ export default function Index() {
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
           <View style={styles.brandingRow}>
-            <Image 
-              source={require('../assets/images/titulo.png')} 
-              style={styles.titleImage}
-              resizeMode="contain"
-            />
-            <Image 
-              source={require('../assets/images/logo.png')} 
-              style={styles.logoImage}
-              resizeMode="contain"
-            />
+            <View style={styles.titleButton}>
+              <Image 
+                source={require('../assets/images/titulo.png')} 
+                style={styles.titleImage}
+                resizeMode="contain"
+              />
+            </View>
+            <View style={styles.logoButton}>
+              <Image 
+                source={require('../assets/images/logo.png')} 
+                style={styles.logoImage}
+                resizeMode="contain"
+              />
+            </View>
           </View>
           <View style={styles.headerButtons}>
             <TouchableOpacity
@@ -209,6 +128,12 @@ export default function Index() {
             >
               <Ionicons name="add-circle" size={24} color={COLORS.primary} />
               <Text style={styles.headerButtonText}>Añadir Hoe al Roster</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.headerButtonSmall}
+              onPress={handleSortAlphabetically}
+            >
+              <Ionicons name="swap-vertical" size={24} color={COLORS.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.headerButtonSmall}
@@ -230,32 +155,77 @@ export default function Index() {
           </Text>
         </View>
 
-        {isLoadingPredictions ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={COLORS.primary} />
-            <Text style={styles.loadingText}>Cargando predicciones...</Text>
-          </View>
-        ) : profilesWithPredictions.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="people-outline" size={80} color={COLORS.textDisabled} />
-            <Text style={styles.emptyText}>No hay perfiles en el roster</Text>
-            <Text style={styles.emptySubtext}>
-              Toca "Añadir Hoe al Roster" para empezar
-            </Text>
-          </View>
-        ) : (
-          <DraggableFlatList
-            data={profilesWithPredictions}
-            renderItem={renderProfileItem}
-            keyExtractor={(item) => item.id}
-            onDragEnd={({ data }) => {
-              setProfilesWithPredictions(data);
-              // Actualizar el orden en el store
-              updateProfileOrder(data.map(p => p.id));
-            }}
-            contentContainerStyle={styles.scrollContent}
-          />
-        )}
+        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+          {profilesWithPredictions.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons name="people-outline" size={80} color={COLORS.textDisabled} />
+              <Text style={styles.emptyText}>No hay perfiles en el roster</Text>
+              <Text style={styles.emptySubtext}>
+                Toca "Añadir Hoe al Roster" para empezar
+              </Text>
+            </View>
+          ) : (
+            profilesWithPredictions.map(profile => (
+              <TouchableOpacity
+                key={profile.id}
+                style={styles.profileCard}
+                onPress={() => router.push(`/profile/${profile.id}`)}
+              >
+                <View style={styles.compactProfileRow}>
+                  {profile.foto ? (
+                    <Image source={{ uri: profile.foto }} style={styles.profileImage} />
+                  ) : (
+                    <View style={[styles.profileImage, styles.profileImagePlaceholder]}>
+                      <Ionicons name="person" size={32} color={COLORS.textSecondary} />
+                    </View>
+                  )}
+                  <View style={styles.profileInfo}>
+                    <Text 
+                      style={[
+                        styles.profileName,
+                        { color: getCategoryColor(profile.mainCategory) }
+                      ]}
+                    >
+                      {profile.nombre}
+                    </Text>
+                    {profile.edad && (
+                      <Text style={styles.profileAge}>{profile.edad} años</Text>
+                    )}
+                    <View style={styles.observationsBadge}>
+                      <Ionicons name="water" size={12} color={COLORS.textSecondary} />
+                      <Text style={styles.observationsText}>
+                        {profile.observaciones.length} registros
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.statusContainer}>
+                    <Text 
+                      style={[
+                        styles.statusText,
+                        { color: getCategoryColor(profile.mainCategory) }
+                      ]}
+                    >
+                      {getCategoryName(profile.mainCategory)}
+                    </Text>
+                    <Text 
+                      style={[
+                        styles.statusPercentage,
+                        { color: getCategoryColor(profile.mainCategory) }
+                      ]}
+                    >
+                      {Math.round(profile.confidence * 100)}%
+                    </Text>
+                  </View>
+                  <Ionicons 
+                    name="chevron-forward" 
+                    size={24} 
+                    color={COLORS.textSecondary} 
+                  />
+                </View>
+              </TouchableOpacity>
+            ))
+          )}
+        </ScrollView>
       </SafeAreaView>
     </GestureHandlerRootView>
   );
@@ -278,8 +248,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
+  titleButton: {
+    flex: 1,
+    marginRight: 8,
+  },
   titleImage: {
     width: 240,
+    height: 50,
+  },
+  logoButton: {
+    width: 50,
     height: 50,
   },
   logoImage: {
@@ -328,21 +306,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textSecondary,
   },
-  loadingContainer: {
+  scrollView: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: COLORS.textSecondary,
   },
   scrollContent: {
     padding: 16,
   },
   emptyState: {
-    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 60,
@@ -363,14 +333,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
     marginBottom: 12,
-  },
-  profileCardActive: {
-    backgroundColor: COLORS.surfaceLight,
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   compactProfileRow: {
     flexDirection: 'row',
@@ -416,18 +380,14 @@ const styles = StyleSheet.create({
     marginRight: 12,
     minWidth: 70,
   },
-  statusIcon: {
-    width: 50,
-    height: 50,
-    marginBottom: 4,
+  statusText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 3,
+    textAlign: 'center',
   },
   statusPercentage: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: 'bold',
-  },
-  reliabilityText: {
-    fontSize: 10,
-    color: COLORS.textSecondary,
-    marginTop: 2,
   },
 });

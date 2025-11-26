@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   Alert,
   TextInput,
   Modal,
-  ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,8 +17,8 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Calendar } from 'react-native-calendars';
 import { useProfileStore } from '../../store/useProfileStore';
-import { predictForDate as predictForDateAPI, suggestClusterFills, PredictionResult } from '../../utils/api';
-import { COLORS } from '../../constants/theme';
+import { scoreForTarget } from '../../utils/cycle_engine';
+import { COLORS, getCategoryColor, getCategoryName } from '../../constants/theme';
 import { formatDateFullES } from '../../utils/dateFormat';
 
 export default function ProfileDetail() {
@@ -33,12 +33,9 @@ export default function ProfileDetail() {
   const [editedEdad, setEditedEdad] = useState(profile?.edad?.toString() || '');
   const [editedNotas, setEditedNotas] = useState(profile?.notas || '');
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [useCalendar, setUseCalendar] = useState(true);
   const [newObservationDate, setNewObservationDate] = useState(new Date().toISOString().split('T')[0]);
-  const [showFillModal, setShowFillModal] = useState(false);
-  const [suggestedFills, setSuggestedFills] = useState<string[]>([]);
-  const [pendingObservationDate, setPendingObservationDate] = useState<string | null>(null);
-  const [todayPrediction, setTodayPrediction] = useState<PredictionResult | null>(null);
-  const [isLoadingPrediction, setIsLoadingPrediction] = useState(true);
+  const [manualDateInput, setManualDateInput] = useState('');
 
   if (!profile) {
     return (
@@ -48,27 +45,39 @@ export default function ProfileDetail() {
     );
   }
 
-  // Cargar predicción del backend
-  useEffect(() => {
-    const loadPrediction = async () => {
-      setIsLoadingPrediction(true);
-      if (profile.observaciones.length > 0) {
-        const obs_dates = profile.observaciones.map(o => o.fecha);
-        const certain_dates = profile.observaciones
-          .filter(o => o.certain !== false)
-          .map(o => o.fecha);
-        
-        const prediction = await predictForDateAPI(
-          obs_dates,
-          new Date().toISOString().split('T')[0],
-          certain_dates
-        );
-        setTodayPrediction(prediction);
-      }
-      setIsLoadingPrediction(false);
-    };
+  const todayPrediction = useMemo(() => {
+    const obsDates = profile.observaciones.map(o => o.fecha);
+    const prediction = scoreForTarget(obsDates, new Date());
+    
+    if (!prediction) {
+      return {
+        regla: 0.25,
+        perrisima: 0.25,
+        horny: 0.25,
+        nifunifa: 0.25,
+        mainCategory: 'nifunifa' as const,
+      };
+    }
 
-    loadPrediction();
+    const maxProb = Math.max(
+      prediction.perrisima,
+      prediction.horny,
+      prediction.nifunifa,
+      prediction.regla
+    );
+
+    let mainCategory: 'regla' | 'perrisima' | 'horny' | 'nifunifa';
+    if (prediction.perrisima === maxProb) {
+      mainCategory = 'perrisima';
+    } else if (prediction.horny === maxProb) {
+      mainCategory = 'horny';
+    } else if (prediction.nifunifa === maxProb) {
+      mainCategory = 'nifunifa';
+    } else {
+      mainCategory = 'regla';
+    }
+
+    return { ...prediction, mainCategory };
   }, [profile.observaciones]);
 
   const handleSaveEdit = async () => {
@@ -109,121 +118,113 @@ export default function ProfileDetail() {
   };
 
   const handleDeleteProfile = () => {
-    Alert.alert(
-      '¿Eliminar perfil?',
-      `¿Estás seguro de que quieres eliminar a ${profile.nombre}? Esta acción no se puede deshacer.`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            await deleteProfile(profile.id);
-            router.back();
+    if (Platform.OS === 'web') {
+      if (confirm(`¿Estás seguro de que quieres eliminar a ${profile.nombre}? Esta acción no se puede deshacer.`)) {
+        deleteProfile(profile.id)
+          .then(() => {
+            router.replace('/');
+          })
+          .catch((error) => {
+            alert('Error al eliminar el perfil');
+            console.error(error);
+          });
+      }
+    } else {
+      Alert.alert(
+        '¿Eliminar perfil?',
+        `¿Estás seguro de que quieres eliminar a ${profile.nombre}? Esta acción no se puede deshacer.`,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          {
+            text: 'Eliminar',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await deleteProfile(profile.id);
+                router.replace('/');
+              } catch (error) {
+                Alert.alert('Error', 'No se pudo eliminar el perfil');
+                console.error(error);
+              }
+            },
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
+  };
+
+  const parseManualDate = (input: string): string | null => {
+    // Eliminar caracteres no numéricos
+    const cleaned = input.replace(/\D/g, '');
+    
+    if (cleaned.length === 8) {
+      // Formato: DDMMYYYY
+      const day = cleaned.substring(0, 2);
+      const month = cleaned.substring(2, 4);
+      const year = cleaned.substring(4, 8);
+      
+      // Validar fecha
+      const date = new Date(`${year}-${month}-${day}`);
+      if (!isNaN(date.getTime())) {
+        return `${year}-${month}-${day}`;
+      }
+    }
+    return null;
   };
 
   const handleAddObservation = async () => {
-    // Primero añadimos la observación seleccionada
-    setPendingObservationDate(newObservationDate);
+    let dateToAdd = newObservationDate;
     
-    // Obtener todas las fechas actuales + la nueva
-    const currentDates = profile.observaciones.map(o => o.fecha);
-    const allDates = [...currentDates, newObservationDate];
+    if (!useCalendar && manualDateInput) {
+      const parsed = parseManualDate(manualDateInput);
+      if (parsed) {
+        dateToAdd = parsed;
+      } else {
+        if (Platform.OS === 'web') {
+          alert('Formato de fecha inválido. Usa DDMMYYYY (ejemplo: 23082025)');
+        } else {
+          Alert.alert('Error', 'Formato de fecha inválido. Usa DDMMYYYY (ejemplo: 23082025)');
+        }
+        return;
+      }
+    }
     
-    // Verificar si hay sugerencias de relleno
-    const suggestions = await suggestClusterFills(allDates);
+    await addObservation(profile.id, { fecha: dateToAdd });
+    setShowDatePicker(false);
+    setManualDateInput('');
     
-    if (suggestions.length > 0) {
-      // Mostrar modal de confirmación
-      setSuggestedFills(suggestions);
-      setShowFillModal(true);
-      setShowDatePicker(false);
+    if (Platform.OS === 'web') {
+      alert('Observación añadida correctamente');
     } else {
-      // No hay sugerencias, añadir directamente
-      await addObservation(profile.id, { fecha: newObservationDate, certain: true });
-      setShowDatePicker(false);
       Alert.alert('Éxito', 'Observación añadida correctamente');
     }
   };
 
-  const handleConfirmFills = async () => {
-    // Añadir la observación original
-    if (pendingObservationDate) {
-      await addObservation(profile.id, { fecha: pendingObservationDate, certain: true });
-    }
-    
-    // Añadir todas las sugerencias
-    for (const fecha of suggestedFills) {
-      await addObservation(profile.id, { fecha, certain: true });
-    }
-    
-    setShowFillModal(false);
-    setPendingObservationDate(null);
-    setSuggestedFills([]);
-    Alert.alert('Éxito', `Se añadieron ${suggestedFills.length + 1} observaciones`);
-  };
-
-  const handleRejectFills = async () => {
-    // Solo añadir la observación original
-    if (pendingObservationDate) {
-      await addObservation(profile.id, { fecha: pendingObservationDate, certain: true });
-    }
-    
-    setShowFillModal(false);
-    setPendingObservationDate(null);
-    setSuggestedFills([]);
-    Alert.alert('Éxito', 'Observación añadida correctamente');
-  };
-
   const handleDeleteObservation = (fecha: string) => {
-    Alert.alert('¿Eliminar observación?', '¿Estás seguro?', [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Eliminar',
-        style: 'destructive',
-        onPress: () => deleteObservation(profile.id, fecha),
-      },
-    ]);
-  };
-
-  // Marcar fechas en el calendario
-  const markedDates = useMemo(() => {
-    const marked: any = {};
-    profile.observaciones.forEach(obs => {
-      marked[obs.fecha] = {
-        selected: true,
-        selectedColor: COLORS.regla,
-      };
-    });
-    return marked;
-  }, [profile.observaciones]);
-
-  const getMainCategoryName = () => {
-    if (!todayPrediction) return 'Sin datos';
-    const cats = todayPrediction.cats;
-    const sexual_prob = cats.sexual_prob || 0;
-    const regla = cats.regla || 0;
-    const nifunifa = cats.nifunifa || 0;
-    const perrisima = cats.perrisima || 0;
-    const horny = cats.horny || 0;
-    
-    if (sexual_prob > Math.max(regla, nifunifa)) {
-      return perrisima >= horny ? 'Perrísima' : 'Horny';
+    if (Platform.OS === 'web') {
+      if (confirm('¿Estás seguro de que quieres eliminar esta observación?')) {
+        deleteObservation(profile.id, fecha)
+          .catch((error) => {
+            alert('Error al eliminar la observación');
+            console.error(error);
+          });
+      }
+    } else {
+      Alert.alert('¿Eliminar observación?', '¿Estás seguro?', [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: () => {
+            deleteObservation(profile.id, fecha)
+              .catch((error) => {
+                Alert.alert('Error', 'No se pudo eliminar la observación');
+                console.error(error);
+              });
+          },
+        },
+      ]);
     }
-    return regla >= nifunifa ? 'Regla' : 'Ni fu ni fa';
-  };
-
-  const getMainCategoryColor = () => {
-    if (!todayPrediction) return COLORS.textSecondary;
-    const name = getMainCategoryName();
-    if (name === 'Perrísima') return COLORS.perrisima;
-    if (name === 'Horny') return COLORS.horny;
-    if (name === 'Regla') return COLORS.regla;
-    return COLORS.nifunifa;
   };
 
   return (
@@ -233,7 +234,7 @@ export default function ProfileDetail() {
           <Ionicons name="arrow-back" size={24} color={COLORS.textPrimary} />
         </TouchableOpacity>
         <Image 
-          source={require('../../assets/images/configuracion.png')} 
+          source={require('../../assets/images/datadelahoe.png')} 
           style={styles.titleImage}
           resizeMode="contain"
         />
@@ -325,66 +326,52 @@ export default function ProfileDetail() {
           </View>
         )}
 
-        {isLoadingPrediction ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={COLORS.primary} />
-            <Text style={styles.loadingText}>Cargando predicción...</Text>
+        <View style={styles.predictionCard}>
+          <Text style={styles.sectionTitle}>Predicción de hoy</Text>
+          <View
+            style={[
+              styles.mainCategoryBadge,
+              { backgroundColor: getCategoryColor(todayPrediction.mainCategory) },
+            ]}
+          >
+            <Text style={styles.mainCategoryText}>
+              {getCategoryName(todayPrediction.mainCategory)}
+            </Text>
           </View>
-        ) : todayPrediction && (
-          <View style={styles.predictionCard}>
-            <Text style={styles.sectionTitle}>Predicción de hoy</Text>
-            <View
-              style={[
-                styles.mainCategoryBadge,
-                { backgroundColor: getMainCategoryColor() },
-              ]}
-            >
-              <Text style={styles.mainCategoryText}>
-                {getMainCategoryName()}
+          <View style={styles.probabilitiesRow}>
+            <View style={styles.probabilityBoxCompact}>
+              <Text style={styles.probabilityLabelCompact}>Regla</Text>
+              <Text style={styles.probabilityValueCompact}>
+                {Math.round(todayPrediction.regla * 100)}%
               </Text>
             </View>
-            <View style={styles.probabilitiesGrid}>
-              <View style={styles.probabilityBox}>
-                <Text style={styles.probabilityLabel}>Regla</Text>
-                <Text style={styles.probabilityValue}>
-                  {Math.round(todayPrediction.cats.regla * 100)}%
-                </Text>
-              </View>
-              <View style={styles.probabilityBox}>
-                <Text style={styles.probabilityLabel}>Perrísima</Text>
-                <Text style={styles.probabilityValue}>
-                  {Math.round(todayPrediction.cats.perrisima * 100)}%
-                </Text>
-              </View>
-              <View style={styles.probabilityBox}>
-                <Text style={styles.probabilityLabel}>Horny</Text>
-                <Text style={styles.probabilityValue}>
-                  {Math.round(todayPrediction.cats.horny * 100)}%
-                </Text>
-              </View>
-              <View style={styles.probabilityBox}>
-                <Text style={styles.probabilityLabel}>Ni fu ni fa</Text>
-                <Text style={styles.probabilityValue}>
-                  {Math.round(todayPrediction.cats.nifunifa * 100)}%
-                </Text>
-              </View>
+            <View style={styles.probabilityBoxCompact}>
+              <Text style={styles.probabilityLabelCompact}>Perrísima</Text>
+              <Text style={styles.probabilityValueCompact}>
+                {Math.round(todayPrediction.perrisima * 100)}%
+              </Text>
             </View>
-            <View style={styles.reliabilityContainer}>
-              <Text style={styles.reliabilityLabel}>Fiabilidad:</Text>
-              <Text style={[
-                styles.reliabilityValue,
-                { color: todayPrediction.reliability_color === 'green' ? '#4CAF50' :
-                         todayPrediction.reliability_color === 'yellow' ? '#FFC107' : '#F44336' }
-              ]}>
-                {Math.round(todayPrediction.reliability_pct)}%
+            <View style={styles.probabilityBoxCompact}>
+              <Text style={styles.probabilityLabelCompact}>Horny</Text>
+              <Text style={styles.probabilityValueCompact}>
+                {Math.round(todayPrediction.horny * 100)}%
+              </Text>
+            </View>
+            <View style={styles.probabilityBoxCompact}>
+              <Text style={styles.probabilityLabelCompact}>Ni fu ni fa</Text>
+              <Text style={styles.probabilityValueCompact}>
+                {Math.round(todayPrediction.nifunifa * 100)}%
               </Text>
             </View>
           </View>
-        )}
+          <Text style={styles.expectedDay}>
+            Día estimado del ciclo: {todayPrediction.expected_day}
+          </Text>
+        </View>
 
         <View style={styles.observationsSection}>
           <View style={styles.observationsHeader}>
-            <Text style={styles.sectionTitle}>Observaciones de sangrado</Text>
+            <Text style={styles.sectionTitle}>Historial de la sangrona</Text>
             <TouchableOpacity
               style={styles.addObservationButton}
               onPress={() => setShowDatePicker(true)}
@@ -425,38 +412,103 @@ export default function ProfileDetail() {
         </View>
       </ScrollView>
 
-      {/* Modal con Calendario */}
-      <Modal visible={showDatePicker} transparent animationType="slide">
+      <Modal visible={showDatePicker} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Seleccionar fecha de sangrado</Text>
-            <Calendar
-              onDayPress={(day) => setNewObservationDate(day.dateString)}
-              markedDates={{
-                ...markedDates,
-                [newObservationDate]: {
-                  selected: true,
-                  selectedColor: COLORS.primary,
-                },
-              }}
-              theme={{
-                backgroundColor: COLORS.surface,
-                calendarBackground: COLORS.surface,
-                textSectionTitleColor: COLORS.textPrimary,
-                selectedDayBackgroundColor: COLORS.primary,
-                selectedDayTextColor: COLORS.background,
-                todayTextColor: COLORS.primary,
-                dayTextColor: COLORS.textPrimary,
-                textDisabledColor: COLORS.textDisabled,
-                monthTextColor: COLORS.textPrimary,
-                arrowColor: COLORS.primary,
-              }}
-            />
-            <Text style={styles.selectedDateText}>Fecha seleccionada: {newObservationDate}</Text>
+            <Text style={styles.modalTitle}>Añadir observación de sangrado</Text>
+            
+            <View style={styles.dateMethodToggle}>
+              <TouchableOpacity
+                style={[styles.toggleButton, useCalendar && styles.toggleButtonActive]}
+                onPress={() => setUseCalendar(true)}
+              >
+                <Ionicons 
+                  name="calendar" 
+                  size={16} 
+                  color={useCalendar ? COLORS.background : COLORS.textSecondary} 
+                />
+                <Text style={[
+                  styles.toggleButtonText,
+                  useCalendar && styles.toggleButtonTextActive
+                ]}>
+                  Calendario
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.toggleButton, !useCalendar && styles.toggleButtonActive]}
+                onPress={() => setUseCalendar(false)}
+              >
+                <Ionicons 
+                  name="create" 
+                  size={16} 
+                  color={!useCalendar ? COLORS.background : COLORS.textSecondary} 
+                />
+                <Text style={[
+                  styles.toggleButtonText,
+                  !useCalendar && styles.toggleButtonTextActive
+                ]}>
+                  Manual
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {useCalendar ? (
+              <Calendar
+                current={newObservationDate}
+                onDayPress={(day) => {
+                  setNewObservationDate(day.dateString);
+                }}
+                markedDates={{
+                  [newObservationDate]: {
+                    selected: true,
+                    selectedColor: COLORS.primary,
+                  },
+                  ...profile.observaciones.reduce((acc, obs) => {
+                    acc[obs.fecha] = { marked: true, dotColor: COLORS.regla };
+                    return acc;
+                  }, {} as any),
+                }}
+                theme={{
+                  backgroundColor: COLORS.surface,
+                  calendarBackground: COLORS.surface,
+                  textSectionTitleColor: COLORS.textPrimary,
+                  selectedDayBackgroundColor: COLORS.primary,
+                  selectedDayTextColor: COLORS.background,
+                  todayTextColor: COLORS.primary,
+                  dayTextColor: COLORS.textPrimary,
+                  textDisabledColor: COLORS.textDisabled,
+                  monthTextColor: COLORS.textPrimary,
+                  arrowColor: COLORS.primary,
+                }}
+                style={styles.calendar}
+              />
+            ) : (
+              <View style={styles.manualInputContainer}>
+                <Text style={styles.manualInputLabel}>
+                  Introduce la fecha (DDMMYYYY):
+                </Text>
+                <TextInput
+                  style={styles.dateInput}
+                  value={manualDateInput}
+                  onChangeText={setManualDateInput}
+                  placeholder="23082025"
+                  placeholderTextColor={COLORS.textDisabled}
+                  keyboardType="number-pad"
+                  maxLength={8}
+                />
+                <Text style={styles.manualInputHint}>
+                  Ejemplo: 23082025 = 23/08/2025
+                </Text>
+              </View>
+            )}
+
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={[styles.modalButton, styles.modalCancelButton]}
-                onPress={() => setShowDatePicker(false)}
+                onPress={() => {
+                  setShowDatePicker(false);
+                  setManualDateInput('');
+                }}
               >
                 <Text style={styles.modalButtonText}>Cancelar</Text>
               </TouchableOpacity>
@@ -465,42 +517,6 @@ export default function ProfileDetail() {
                 onPress={handleAddObservation}
               >
                 <Text style={[styles.modalButtonText, styles.confirmButtonText]}>Añadir</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Modal de confirmación de relleno */}
-      <Modal visible={showFillModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Días intermedios detectados</Text>
-            <Text style={styles.modalText}>
-              Se detectaron {suggestedFills.length} días intermedios entre tus observaciones.
-            </Text>
-            <Text style={styles.modalText}>
-              ¿Quieres añadirlos como días de sangrado confirmados?
-            </Text>
-            <View style={styles.suggestedDatesList}>
-              {suggestedFills.map((fecha, index) => (
-                <Text key={index} style={styles.suggestedDate}>
-                  • {formatDateFullES(new Date(fecha + 'T12:00:00'))}
-                </Text>
-              ))}
-            </View>
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={[styles.modalButton, styles.modalCancelButton]}
-                onPress={handleRejectFills}
-              >
-                <Text style={styles.modalButtonText}>No, gracias</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalButton, styles.modalConfirmButton]}
-                onPress={handleConfirmFills}
-              >
-                <Text style={[styles.modalButtonText, styles.confirmButtonText]}>Sí, añadir</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -515,7 +531,10 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   backButton: { padding: 4 },
   deleteButton: { padding: 4 },
-  titleImage: { width: 180, height: 40 },
+  titleImage: {
+    width: 180,
+    height: 30,
+  },
   scrollView: { flex: 1 },
   scrollContent: { padding: 16 },
   photoSection: { alignItems: 'center', marginBottom: 24 },
@@ -536,19 +555,15 @@ const styles = StyleSheet.create({
   cancelButton: { backgroundColor: COLORS.surfaceLight, borderWidth: 1, borderColor: COLORS.border },
   saveButton: { backgroundColor: COLORS.primary },
   buttonText: { fontSize: 14, fontWeight: 'bold', color: COLORS.textPrimary },
-  loadingContainer: { alignItems: 'center', paddingVertical: 24 },
-  loadingText: { marginTop: 12, fontSize: 14, color: COLORS.textSecondary },
   predictionCard: { backgroundColor: COLORS.surface, borderRadius: 12, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: COLORS.border },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: COLORS.textPrimary, marginBottom: 12 },
   mainCategoryBadge: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, alignItems: 'center', marginBottom: 16 },
   mainCategoryText: { color: COLORS.background, fontSize: 16, fontWeight: 'bold' },
-  probabilitiesGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  probabilityBox: { flex: 1, minWidth: '45%', backgroundColor: COLORS.surfaceLight, padding: 12, borderRadius: 8, alignItems: 'center' },
-  probabilityLabel: { fontSize: 11, color: COLORS.textSecondary, marginBottom: 4 },
-  probabilityValue: { fontSize: 18, fontWeight: 'bold', color: COLORS.textPrimary },
-  reliabilityContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 12, gap: 8 },
-  reliabilityLabel: { fontSize: 14, color: COLORS.textSecondary },
-  reliabilityValue: { fontSize: 16, fontWeight: 'bold' },
+  probabilitiesRow: { flexDirection: 'row', gap: 6 },
+  probabilityBoxCompact: { flex: 1, backgroundColor: COLORS.surfaceLight, padding: 8, borderRadius: 8, alignItems: 'center' },
+  probabilityLabelCompact: { fontSize: 9, color: COLORS.textSecondary, marginBottom: 3, textAlign: 'center' },
+  probabilityValueCompact: { fontSize: 14, fontWeight: 'bold', color: COLORS.textPrimary },
+  expectedDay: { fontSize: 12, color: COLORS.textSecondary, marginTop: 12, textAlign: 'center' },
   observationsSection: { backgroundColor: COLORS.surface, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: COLORS.border },
   observationsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   addObservationButton: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -561,14 +576,20 @@ const styles = StyleSheet.create({
   observationLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   observationDate: { fontSize: 14, color: COLORS.textPrimary },
   errorText: { color: COLORS.error, fontSize: 16, textAlign: 'center', marginTop: 40 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.8)', justifyContent: 'center', alignItems: 'center', padding: 16 },
-  modalContent: { backgroundColor: COLORS.surface, borderRadius: 12, padding: 24, width: '100%', maxWidth: 400, maxHeight: '90%' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.7)', justifyContent: 'center', alignItems: 'center', padding: 16 },
+  modalContent: { backgroundColor: COLORS.surface, borderRadius: 12, padding: 24, width: '100%', maxWidth: 500 },
   modalTitle: { fontSize: 18, fontWeight: 'bold', color: COLORS.textPrimary, marginBottom: 16 },
-  modalText: { fontSize: 14, color: COLORS.textSecondary, marginBottom: 12 },
-  selectedDateText: { fontSize: 14, color: COLORS.textPrimary, marginTop: 16, marginBottom: 16, textAlign: 'center' },
-  suggestedDatesList: { marginVertical: 12, paddingLeft: 8 },
-  suggestedDate: { fontSize: 14, color: COLORS.textPrimary, marginBottom: 4 },
-  modalButtons: { flexDirection: 'row', gap: 12, marginTop: 8 },
+  dateMethodToggle: { flexDirection: 'row', gap: 8, marginBottom: 16 },
+  toggleButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, backgroundColor: COLORS.surfaceLight, borderWidth: 1, borderColor: COLORS.border },
+  toggleButtonActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  toggleButtonText: { fontSize: 14, fontWeight: '600', color: COLORS.textSecondary },
+  toggleButtonTextActive: { color: COLORS.background },
+  calendar: { borderRadius: 8, marginBottom: 16 },
+  manualInputContainer: { marginBottom: 16 },
+  manualInputLabel: { fontSize: 14, color: COLORS.textPrimary, marginBottom: 8, fontWeight: '600' },
+  manualInputHint: { fontSize: 12, color: COLORS.textSecondary, marginTop: 6, fontStyle: 'italic' },
+  dateInput: { backgroundColor: COLORS.surfaceLight, borderWidth: 1, borderColor: COLORS.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 12, fontSize: 16, color: COLORS.textPrimary },
+  modalButtons: { flexDirection: 'row', gap: 12 },
   modalButton: { flex: 1, paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   modalCancelButton: { backgroundColor: COLORS.surfaceLight, borderWidth: 1, borderColor: COLORS.border },
   modalConfirmButton: { backgroundColor: COLORS.primary },

@@ -2,7 +2,6 @@
 
 export interface Observation {
   fecha: string; // ISO date string
-  certain?: boolean; // Certeza del dato (por defecto true)
 }
 
 export interface Profile {
@@ -13,6 +12,7 @@ export interface Profile {
   foto?: string; // base64
   observaciones: Observation[];
   createdAt: string;
+  order?: number; // Para ordenamiento manual
 }
 
 export interface PredictionResult {

@@ -12,7 +12,7 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useProfileStore } from '../store/useProfileStore';
-import { scoreForTarget } from '../utils/cycle_engine';
+import { score_for_target } from '../utils/cycle_engine';
 import { COLORS, getCategoryColor, getCategoryName } from '../constants/theme';
 import { formatDateES } from '../utils/dateFormat';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';

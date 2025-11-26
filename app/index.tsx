@@ -12,7 +12,7 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useProfileStore } from '../store/useProfileStore';
-import { score_for_target } from '../utils/cycle_engine';
+import { scoreForTarget } from '../utils/cycle_engine';
 import { COLORS, getCategoryColor, getCategoryName } from '../constants/theme';
 import { formatDateES } from '../utils/dateFormat';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -44,18 +44,20 @@ export default function Index() {
   }, [profiles]);
 
   const profilesWithPredictions = useMemo(() => {
-    return sortedProfiles.map(profile => {
-      const obsDates = profile.observaciones.map(o => o.fecha);
-      const prediction = scoreForTarget(obsDates, today);
-      
-      if (!prediction) {
-        return {
-          ...profile,
-          prediction: { regla: 0.25, perrisima: 0.25, horny: 0.25, nifunifa: 0.25 },
-          mainCategory: 'nifunifa' as const,
-          confidence: 0.25,
-        };
-      }
+    try {
+      return sortedProfiles.map(profile => {
+        try {
+          const obsDates = profile.observaciones.map(o => o.fecha);
+          const prediction = scoreForTarget(obsDates, today);
+          
+          if (!prediction) {
+            return {
+              ...profile,
+              prediction: { regla: 0.25, perrisima: 0.25, horny: 0.25, nifunifa: 0.25 },
+              mainCategory: 'nifunifa' as const,
+              confidence: 0.25,
+            };
+          }
       
       // Prioridad: Perrísima > Horny > Ni fu ni fa > Regla
       const maxProb = Math.max(
@@ -78,13 +80,26 @@ export default function Index() {
       
       const confidence = maxProb;
 
-      return {
-        ...profile,
-        prediction,
-        mainCategory,
-        confidence,
-      };
-    });
+          return {
+            ...profile,
+            prediction,
+            mainCategory,
+            confidence,
+          };
+        } catch (error) {
+          console.error('Error predicting for profile:', profile.id, error);
+          return {
+            ...profile,
+            prediction: { regla: 0.25, perrisima: 0.25, horny: 0.25, nifunifa: 0.25 },
+            mainCategory: 'nifunifa' as const,
+            confidence: 0.25,
+          };
+        }
+      });
+    } catch (error) {
+      console.error('Error in profilesWithPredictions:', error);
+      return [];
+    }
   }, [sortedProfiles]);
 
   const handleSortAlphabetically = async () => {
@@ -116,30 +131,28 @@ export default function Index() {
           </View>
           <View style={styles.headerButtons}>
             <TouchableOpacity
-              style={styles.headerButton}
+              style={styles.headerButtonIcon}
               onPress={() => router.push('/calendar')}
             >
-              <Ionicons name="calendar" size={24} color={COLORS.primary} />
-              <Text style={styles.headerButtonText}>Hoe Tracker</Text>
+              <Ionicons name="calendar" size={22} color={COLORS.primary} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.headerButton}
+              style={styles.headerButtonIcon}
               onPress={() => router.push('/add-profile')}
             >
-              <Ionicons name="add-circle" size={24} color={COLORS.primary} />
-              <Text style={styles.headerButtonText}>Añadir Hoe al Roster</Text>
+              <Ionicons name="add-circle" size={22} color={COLORS.primary} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.headerButtonSmall}
+              style={styles.headerButtonIcon}
               onPress={handleSortAlphabetically}
             >
-              <Ionicons name="swap-vertical" size={24} color={COLORS.textSecondary} />
+              <Ionicons name="swap-vertical" size={22} color={COLORS.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.headerButtonSmall}
+              style={styles.headerButtonIcon}
               onPress={() => router.push('/settings')}
             >
-              <Ionicons name="settings" size={24} color={COLORS.textSecondary} />
+              <Ionicons name="settings" size={22} color={COLORS.textSecondary} />
             </TouchableOpacity>
           </View>
         </View>
@@ -266,31 +279,17 @@ const styles = StyleSheet.create({
   },
   headerButtons: {
     flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
-  },
-  headerButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 6,
-    backgroundColor: COLORS.surface,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: COLORS.primary,
+    alignItems: 'center',
   },
-  headerButtonSmall: {
+  headerButtonIcon: {
     backgroundColor: COLORS.surface,
     padding: 8,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
-  },
-  headerButtonText: {
-    color: COLORS.primary,
-    fontSize: 12,
-    fontWeight: '600',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   dateContainer: {
     paddingHorizontal: 16,

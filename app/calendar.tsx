@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Calendar, LocaleConfig } from 'react-native-calendars';
 import { useProfileStore } from '../store/useProfileStore';
-import { predictForDate, getMainCategory } from '../utils/predictions';
+import { scoreForTarget } from '../utils/cycle_engine';
 import { COLORS, getCategoryColor, getCategoryName } from '../constants/theme';
 import { formatDateShortES } from '../utils/dateFormat';
 
@@ -42,38 +42,61 @@ LocaleConfig.defaultLocale = 'es';
 export default function CalendarScreen() {
   const router = useRouter();
   const profiles = useProfileStore(state => state.profiles);
-  const profileOrder = useProfileStore(state => state.profileOrder);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
 
   const predictionsForDate = useMemo(() => {
-    const date = new Date(selectedDate + 'T12:00:00');
-    
-    // Ordenar perfiles según el orden personalizado, o alfabéticamente si no hay orden
-    let sortedProfiles = [...profiles];
-    if (profileOrder.length > 0) {
-      sortedProfiles.sort((a, b) => {
-        const indexA = profileOrder.indexOf(a.id);
-        const indexB = profileOrder.indexOf(b.id);
-        if (indexA === -1 && indexB === -1) return a.nombre.localeCompare(b.nombre, 'es');
-        if (indexA === -1) return 1;
-        if (indexB === -1) return -1;
-        return indexA - indexB;
-      });
-    } else {
-      sortedProfiles.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
-    }
-    
-    return sortedProfiles.map(profile => {
-      const prediction = predictForDate(date, profile.observaciones);
-      const mainCategory = getMainCategory(prediction);
+    try {
+      const date = new Date(selectedDate + 'T12:00:00');
+      return profiles.map(profile => {
+        try {
+          const obsDates = profile.observaciones.map(o => o.fecha);
+          const prediction = scoreForTarget(obsDates, date);
 
-      return {
-        ...profile,
-        prediction,
-        mainCategory,
-      };
-    });
-  }, [profiles, profileOrder, selectedDate]);
+          if (!prediction) {
+            return {
+              ...profile,
+              prediction: { regla: 0.25, perrisima: 0.25, horny: 0.25, nifunifa: 0.25 },
+              mainCategory: 'nifunifa' as const,
+            };
+          }
+
+      const maxProb = Math.max(
+        prediction.perrisima,
+        prediction.horny,
+        prediction.nifunifa,
+        prediction.regla
+      );
+
+      let mainCategory: 'regla' | 'perrisima' | 'horny' | 'nifunifa';
+      if (prediction.perrisima === maxProb) {
+        mainCategory = 'perrisima';
+      } else if (prediction.horny === maxProb) {
+        mainCategory = 'horny';
+      } else if (prediction.nifunifa === maxProb) {
+        mainCategory = 'nifunifa';
+      } else {
+        mainCategory = 'regla';
+      }
+
+          return {
+            ...profile,
+            prediction,
+            mainCategory,
+          };
+        } catch (error) {
+          console.error('Error predicting for profile:', profile.id, error);
+          return {
+            ...profile,
+            prediction: { regla: 0.25, perrisima: 0.25, horny: 0.25, nifunifa: 0.25 },
+            mainCategory: 'nifunifa' as const,
+          };
+        }
+      });
+    } catch (error) {
+      console.error('Error in predictionsForDate:', error);
+      return [];
+    }
+  }, [profiles, selectedDate]);
 
   const markedDates = useMemo(() => {
     const marks: any = {};

@@ -44,22 +44,27 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
   },
 
   addProfile: async (profileData) => {
-    const existingProfiles = get().profiles;
-    const maxOrder = existingProfiles.length > 0 
-      ? Math.max(...existingProfiles.map(p => p.order || 0))
-      : -1;
-    
-    const newProfile: Profile = {
-      ...profileData,
-      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-      observaciones: profileData.observaciones || [],
-      createdAt: new Date().toISOString(),
-      order: maxOrder + 1,
-    };
+    try {
+      const existingProfiles = get().profiles;
+      const maxOrder = existingProfiles.length > 0 
+        ? Math.max(...existingProfiles.map(p => p.order || 0))
+        : -1;
+      
+      const newProfile: Profile = {
+        ...profileData,
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        observaciones: profileData.observaciones || [],
+        createdAt: new Date().toISOString(),
+        order: maxOrder + 1,
+      };
 
-    const profiles = [...existingProfiles, newProfile];
-    set({ profiles });
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
+      const profiles = [...existingProfiles, newProfile];
+      set({ profiles });
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
+    } catch (error) {
+      console.error('Error adding profile:', error);
+      throw error;
+    }
   },
 
   updateProfile: async (id, updates) => {

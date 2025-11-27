@@ -154,16 +154,13 @@ export default function ProfileDetail() {
   };
 
   const parseManualDate = (input: string): string | null => {
-    // Eliminar caracteres no numéricos
     const cleaned = input.replace(/\D/g, '');
     
     if (cleaned.length === 8) {
-      // Formato: DDMMYYYY
       const day = cleaned.substring(0, 2);
       const month = cleaned.substring(2, 4);
       const year = cleaned.substring(4, 8);
-      
-      // Validar fecha
+
       const date = new Date(`${year}-${month}-${day}`);
       if (!isNaN(date.getTime())) {
         return `${year}-${month}-${day}`;
@@ -188,45 +185,86 @@ export default function ProfileDetail() {
         return;
       }
     }
-    
+
+    // -------------------------------
+    // 🚀 NUEVO: sugerir auto-rellenar días intermedios
+    // -------------------------------
+
+    const sorted = profile.observaciones
+      .slice()
+      .sort((a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime());
+
+    const newDateObj = new Date(dateToAdd + "T12:00:00");
+    const intermediate: string[] = [];
+
+    for (let i = 0; i < sorted.length; i++) {
+      const obsDateObj = new Date(sorted[i].fecha + "T12:00:00");
+
+      const daysDiff = Math.abs(
+        Math.floor((newDateObj.getTime() - obsDateObj.getTime()) / (1000 * 60 * 60 * 24))
+      );
+
+      // Solo rellenamos huecos de 2 a 7 días (rango máximo de regla)
+      if (daysDiff > 1 && daysDiff <= 7) {
+        const start = newDateObj < obsDateObj ? newDateObj : obsDateObj;
+        const end = newDateObj < obsDateObj ? obsDateObj : newDateObj;
+
+        for (let d = 1; d < daysDiff; d++) {
+          const intDate = new Date(start);
+          intDate.setDate(start.getDate() + d);
+          const iso = intDate.toISOString().split("T")[0];
+
+          if (!profile.observaciones.some(o => o.fecha === iso)) {
+            intermediate.push(iso);
+          }
+        }
+      }
+    }
+
+    if (intermediate.length > 0) {
+      const msg = `Hay ${intermediate.length} días sin registrar entre tus observaciones. ¿Quieres marcarlos también como días de regla?`;
+
+      const addAll = async () => {
+        for (const fecha of intermediate) {
+          await addObservation(profile.id, { fecha });
+        }
+      };
+
+      if (Platform.OS === "web") {
+        if (confirm(msg)) {
+          await addAll();
+        }
+      } else {
+        await new Promise(resolve => {
+          Alert.alert(
+            "Auto-rellenar días",
+            msg,
+            [
+              { text: "No", style: "cancel", onPress: resolve },
+              {
+                text: "Sí",
+                onPress: async () => {
+                  await addAll();
+                  resolve(null);
+                }
+              }
+            ]
+          );
+        });
+      }
+    }
+
+    // Añadimos la observación principal
     await addObservation(profile.id, { fecha: dateToAdd });
     setShowDatePicker(false);
-    setManualDateInput('');
-    
-    if (Platform.OS === 'web') {
-      alert('Observación añadida correctamente');
+    setManualDateInput("");
+
+    if (Platform.OS === "web") {
+      alert("Observación añadida correctamente");
     } else {
-      Alert.alert('Éxito', 'Observación añadida correctamente');
+      Alert.alert("Éxito", "Observación añadida correctamente");
     }
   };
-
-  const handleDeleteObservation = (fecha: string) => {
-    if (Platform.OS === 'web') {
-      if (confirm('¿Estás seguro de que quieres eliminar esta observación?')) {
-        deleteObservation(profile.id, fecha)
-          .catch((error) => {
-            alert('Error al eliminar la observación');
-            console.error(error);
-          });
-      }
-    } else {
-      Alert.alert('¿Eliminar observación?', '¿Estás seguro?', [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: () => {
-            deleteObservation(profile.id, fecha)
-              .catch((error) => {
-                Alert.alert('Error', 'No se pudo eliminar la observación');
-                console.error(error);
-              });
-          },
-        },
-      ]);
-    }
-  };
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
@@ -244,6 +282,8 @@ export default function ProfileDetail() {
       </View>
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+        
+        {/* FOTO */}
         <View style={styles.photoSection}>
           <TouchableOpacity onPress={handleChangePhoto}>
             {profile.foto ? (
@@ -259,6 +299,7 @@ export default function ProfileDetail() {
           </TouchableOpacity>
         </View>
 
+        {/* INFO / EDIT */}
         {isEditing ? (
           <View style={styles.editSection}>
             <TextInput
@@ -307,18 +348,21 @@ export default function ProfileDetail() {
               <Text style={styles.infoLabel}>Nombre:</Text>
               <Text style={styles.infoValue}>{profile.nombre}</Text>
             </View>
+
             {profile.edad && (
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Edad:</Text>
                 <Text style={styles.infoValue}>{profile.edad} años</Text>
               </View>
             )}
+
             {profile.notas && (
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Notas:</Text>
                 <Text style={styles.infoValue}>{profile.notas}</Text>
               </View>
             )}
+
             <TouchableOpacity style={styles.editButton} onPress={() => setIsEditing(true)}>
               <Ionicons name="pencil" size={16} color={COLORS.primary} />
               <Text style={styles.editButtonText}>Editar data</Text>
@@ -326,18 +370,19 @@ export default function ProfileDetail() {
           </View>
         )}
 
+        {/* PREDICCIÓN */}
         <View style={styles.predictionCard}>
           <Text style={styles.sectionTitle}>Predicción de hoy</Text>
+
           <View
             style={[
               styles.mainCategoryBadge,
               { backgroundColor: getCategoryColor(todayPrediction.mainCategory) },
             ]}
           >
-            <Text style={styles.mainCategoryText}>
-              {getCategoryName(todayPrediction.mainCategory)}
-            </Text>
+            <Text style={styles.mainCategoryText}>{getCategoryName(todayPrediction.mainCategory)}</Text>
           </View>
+
           <View style={styles.probabilitiesRow}>
             <View style={styles.probabilityBoxCompact}>
               <Text style={styles.probabilityLabelCompact}>Regla</Text>
@@ -364,11 +409,13 @@ export default function ProfileDetail() {
               </Text>
             </View>
           </View>
+
           <Text style={styles.expectedDay}>
             Día estimado del ciclo: {todayPrediction.expected_day}
           </Text>
         </View>
 
+        {/* HISTORIAL */}
         <View style={styles.observationsSection}>
           <View style={styles.observationsHeader}>
             <Text style={styles.sectionTitle}>Historial de la sangrona</Text>
@@ -385,9 +432,7 @@ export default function ProfileDetail() {
             <View style={styles.emptyObservations}>
               <Ionicons name="water-outline" size={40} color={COLORS.textDisabled} />
               <Text style={styles.emptyText}>No hay observaciones aún</Text>
-              <Text style={styles.emptySubtext}>
-                Añade fechas de sangrado para mejorar las predicciones
-              </Text>
+              <Text style={styles.emptySubtext}>Añade fechas de sangrado para mejorar las predicciones</Text>
             </View>
           ) : (
             <View style={styles.observationsList}>
@@ -402,6 +447,7 @@ export default function ProfileDetail() {
                         {formatDateFullES(new Date(obs.fecha + 'T12:00:00'))}
                       </Text>
                     </View>
+
                     <TouchableOpacity onPress={() => handleDeleteObservation(obs.fecha)}>
                       <Ionicons name="close-circle" size={24} color={COLORS.error} />
                     </TouchableOpacity>
@@ -412,11 +458,13 @@ export default function ProfileDetail() {
         </View>
       </ScrollView>
 
+      {/* MODAL AÑADIR SANGRADO */}
       <Modal visible={showDatePicker} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Añadir observación de sangrado</Text>
-            
+
+            {/* Calendario vs manual */}
             <View style={styles.dateMethodToggle}>
               <TouchableOpacity
                 style={[styles.toggleButton, useCalendar && styles.toggleButtonActive]}
@@ -425,15 +473,13 @@ export default function ProfileDetail() {
                 <Ionicons 
                   name="calendar" 
                   size={16} 
-                  color={useCalendar ? COLORS.background : COLORS.textSecondary} 
+                  color={useCalendar ? COLORS.background : COLORS.textSecondary}
                 />
-                <Text style={[
-                  styles.toggleButtonText,
-                  useCalendar && styles.toggleButtonTextActive
-                ]}>
+                <Text style={[styles.toggleButtonText, useCalendar && styles.toggleButtonTextActive]}>
                   Calendario
                 </Text>
               </TouchableOpacity>
+
               <TouchableOpacity
                 style={[styles.toggleButton, !useCalendar && styles.toggleButtonActive]}
                 onPress={() => setUseCalendar(false)}
@@ -441,17 +487,15 @@ export default function ProfileDetail() {
                 <Ionicons 
                   name="create" 
                   size={16} 
-                  color={!useCalendar ? COLORS.background : COLORS.textSecondary} 
+                  color={!useCalendar ? COLORS.background : COLORS.textSecondary}
                 />
-                <Text style={[
-                  styles.toggleButtonText,
-                  !useCalendar && styles.toggleButtonTextActive
-                ]}>
+                <Text style={[styles.toggleButtonText, !useCalendar && styles.toggleButtonTextActive]}>
                   Manual
                 </Text>
               </TouchableOpacity>
             </View>
 
+            {/* Fecha */}
             {useCalendar ? (
               <Calendar
                 current={newObservationDate}
@@ -459,10 +503,7 @@ export default function ProfileDetail() {
                   setNewObservationDate(day.dateString);
                 }}
                 markedDates={{
-                  [newObservationDate]: {
-                    selected: true,
-                    selectedColor: COLORS.primary,
-                  },
+                  [newObservationDate]: { selected: true, selectedColor: COLORS.primary },
                   ...profile.observaciones.reduce((acc, obs) => {
                     acc[obs.fecha] = { marked: true, dotColor: COLORS.regla };
                     return acc;
@@ -484,9 +525,7 @@ export default function ProfileDetail() {
               />
             ) : (
               <View style={styles.manualInputContainer}>
-                <Text style={styles.manualInputLabel}>
-                  Introduce la fecha (DDMMYYYY):
-                </Text>
+                <Text style={styles.manualInputLabel}>Introduce la fecha (DDMMYYYY):</Text>
                 <TextInput
                   style={styles.dateInput}
                   value={manualDateInput}
@@ -496,12 +535,11 @@ export default function ProfileDetail() {
                   keyboardType="number-pad"
                   maxLength={8}
                 />
-                <Text style={styles.manualInputHint}>
-                  Ejemplo: 23082025 = 23/08/2025
-                </Text>
+                <Text style={styles.manualInputHint}>Ejemplo: 23082025 = 23/08/2025</Text>
               </View>
             )}
 
+            {/* Botones modal */}
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={[styles.modalButton, styles.modalCancelButton]}
@@ -512,6 +550,7 @@ export default function ProfileDetail() {
               >
                 <Text style={styles.modalButtonText}>Cancelar</Text>
               </TouchableOpacity>
+
               <TouchableOpacity
                 style={[styles.modalButton, styles.modalConfirmButton]}
                 onPress={handleAddObservation}
@@ -531,10 +570,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   backButton: { padding: 4 },
   deleteButton: { padding: 4 },
-  titleImage: {
-    width: 180,
-    height: 30,
-  },
+  titleImage: { width: 180, height: 30 },
   scrollView: { flex: 1 },
   scrollContent: { padding: 16 },
   photoSection: { alignItems: 'center', marginBottom: 24 },
@@ -575,7 +611,6 @@ const styles = StyleSheet.create({
   observationItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: COLORS.surfaceLight, padding: 12, borderRadius: 8 },
   observationLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   observationDate: { fontSize: 14, color: COLORS.textPrimary },
-  errorText: { color: COLORS.error, fontSize: 16, textAlign: 'center', marginTop: 40 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.7)', justifyContent: 'center', alignItems: 'center', padding: 16 },
   modalContent: { backgroundColor: COLORS.surface, borderRadius: 12, padding: 24, width: '100%', maxWidth: 500 },
   modalTitle: { fontSize: 18, fontWeight: 'bold', color: COLORS.textPrimary, marginBottom: 16 },
